@@ -33,7 +33,8 @@ The main index for documentation is available at:
 
 Step by step tutorials to install FreeSWITCH from packages:
 
-  * [Debian](https://freeswitch.org/confluence/display/FREESWITCH/Debian) [<b>Recommended</b>]
+  * [Using FSGET](/scripts/packaging) [<b>Recommended</b>]
+  * [Debian](https://freeswitch.org/confluence/display/FREESWITCH/Debian)
   * [Raspberry Pi](https://freeswitch.org/confluence/display/FREESWITCH/Raspberry+Pi)
   * [CentOS 7](https://freeswitch.org/confluence/display/FREESWITCH/CentOS+7+and+RHEL+7)
 
@@ -47,11 +48,15 @@ Step by step tutorials to build FreeSWITCH with provided dependency packages:
   * [Raspberry Pi](https://freeswitch.org/confluence/display/FREESWITCH/Raspberry+Pi)
   * [CentOS 7](https://freeswitch.org/confluence/display/FREESWITCH/CentOS+7+and+RHEL+7)
 
+### How to build Debian packages
+
+  * [Using FSDEB](/scripts/packaging/build)
+
 ## Downloads
 
   * [Tarballs](https://files.freeswitch.org/releases/freeswitch/)
   * [Windows Installer](http://files.freeswitch.org/windows/installer/x64/)
-  * [Windows Sound Packages](http://files.freeswitch.org/windows/installer/x64/sounds/)
+  * [Windows Sound Packages](https://github.com/freeswitch/freeswitch-sounds/releases)
 
 ## Contributions
 

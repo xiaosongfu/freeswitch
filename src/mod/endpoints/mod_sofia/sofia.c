@@ -693,6 +693,7 @@ void sofia_handle_sip_i_notify(switch_core_session_t *session, int status,
 			}
 		}
 		nua_respond(nh, SIP_200_OK, NUTAG_WITH_THIS_MSG(de->data->e_msg), TAG_IF(!zstr(session_id_header), SIPTAG_HEADER_STR(session_id_header)), TAG_END());
+		return;
 	}
 
 	/* if no session, assume it could be an incoming notify from a gateway subscription */
@@ -1209,10 +1210,10 @@ void sofia_update_callee_id(switch_core_session_t *session, sofia_profile_t *pro
 {
 	switch_channel_t *channel = switch_core_session_get_channel(session);
 	sip_p_asserted_identity_t *passerted = NULL;
-	char *name = NULL;
-	const char *number = "unknown", *tmp;
+	const char *name = NULL;
+	const char *number = NULL, *tmp;
 	switch_caller_profile_t *caller_profile;
-	char *dup = NULL;
+	char *dup = NULL, *name_dup = NULL, *number_dup = NULL;
 	switch_event_t *event;
 	const char *val;
 	int fs = 0, lazy = 0, att = 0;
@@ -1230,13 +1231,6 @@ void sofia_update_callee_id(switch_core_session_t *session, sofia_profile_t *pro
 	}
 
 
-	number = (char *) switch_channel_get_variable(channel, num_var);
-	name = (char *) switch_channel_get_variable(channel, name_var);
-
-	if (zstr(number) && sip->sip_to) {
-		number = sip->sip_to->a_url->url_user;
-	}
-
 	if (switch_channel_var_true(channel, "sip_ignore_remote_cid")) {
 		fs++;
 	} else {
@@ -1246,7 +1240,7 @@ void sofia_update_callee_id(switch_core_session_t *session, sofia_profile_t *pro
 		}
 
 		if ((val = sofia_glue_get_unknown_header(sip, "X-FS-Display-Name"))) {
-			name = (char *) val;
+			name = val;
 			check_decode(name, session);
 			fs++;
 		}
@@ -1264,6 +1258,7 @@ void sofia_update_callee_id(switch_core_session_t *session, sofia_profile_t *pro
 
 	if (!fs) {
 		sip_remote_party_id_t *rpid;
+
 		if ((passerted = sip_p_asserted_identity(sip))) {
 			if (passerted->paid_url->url_user) {
 				number = passerted->paid_url->url_user;
@@ -1276,8 +1271,8 @@ void sofia_update_callee_id(switch_core_session_t *session, sofia_profile_t *pro
 				} else {
 					name = dup;
 				}
-				if (end_of(name) == '"') {
-					end_of(name) = '\0';
+				if (end_of(dup) == '"') {
+					end_of(dup) = '\0';
 				}
 			}
 		} else if ((rpid = sip_remote_party_id(sip))) {
@@ -1292,8 +1287,8 @@ void sofia_update_callee_id(switch_core_session_t *session, sofia_profile_t *pro
 				} else {
 					name = dup;
 				}
-				if (end_of(name) == '"') {
-					end_of(name) = '\0';
+				if (end_of(dup) == '"') {
+					end_of(dup) = '\0';
 				}
 			}
 		}
@@ -1302,7 +1297,12 @@ void sofia_update_callee_id(switch_core_session_t *session, sofia_profile_t *pro
 
 	if (zstr(number)) {
 		if ((tmp = switch_channel_get_variable(channel, num_var)) && !zstr(tmp)) {
-			number = (char *) tmp;
+			number = tmp;
+		}
+
+		/* The To user ranks below the channel variable, so it is only consulted once that misses. */
+		if (zstr(number) && sip->sip_to) {
+			number = sip->sip_to->a_url->url_user;
 		}
 
 		if (zstr(number)) {
@@ -1312,12 +1312,12 @@ void sofia_update_callee_id(switch_core_session_t *session, sofia_profile_t *pro
 
 	if (zstr(name)) {
 		if ((tmp = switch_channel_get_variable(channel, name_var)) && !zstr(tmp)) {
-			name = (char *) tmp;
+			name = tmp;
 		}
 	}
 
 	if (zstr(name)) {
-		name = (char *) number;
+		name = number;
 	}
 
 	if (zstr(name) || zstr(number)) {
@@ -1326,14 +1326,23 @@ void sofia_update_callee_id(switch_core_session_t *session, sofia_profile_t *pro
 
 	caller_profile = switch_channel_get_caller_profile(channel);
 
+	/* Sanitized before the comparisons, not at the stores: the fields hold sanitized values, so a
+	   raw candidate never matches. Scratch is heap so an unchanged update costs the session
+	   nothing, and the originals are freed since sanitizing returns a pointer into them. */
+	name_dup = strdup(name);
+	number_dup = strdup(number);
+	switch_assert(name_dup && number_dup);
+	name = switch_sanitize_number(name_dup);
+	number = switch_sanitize_number(number_dup);
+
 	if (switch_channel_inbound_display(channel)) {
 
 		if (!strcmp(caller_profile->caller_id_name, name) && !strcmp(caller_profile->caller_id_number, number)) {
 			switch_log_printf(SWITCH_CHANNEL_LOG, SWITCH_LOG_DEBUG1, "%s Same Caller ID \"%s\" <%s>\n", switch_channel_get_name(channel), name, number);
 			send = 0;
 		} else {
-			caller_profile->caller_id_name = switch_sanitize_number(switch_core_strdup(caller_profile->pool, name));
-			caller_profile->caller_id_number = switch_sanitize_number(switch_core_strdup(caller_profile->pool, number));
+			caller_profile->caller_id_name = switch_core_strdup(caller_profile->pool, name);
+			caller_profile->caller_id_number = switch_core_strdup(caller_profile->pool, number);
 			switch_log_printf(SWITCH_CHANNEL_LOG, SWITCH_LOG_INFO, "%s Update Caller ID to \"%s\" <%s>\n", switch_channel_get_name(channel), name, number);
 		}
 
@@ -1343,8 +1352,8 @@ void sofia_update_callee_id(switch_core_session_t *session, sofia_profile_t *pro
 			switch_log_printf(SWITCH_CHANNEL_LOG, SWITCH_LOG_DEBUG1, "%s Same Callee ID \"%s\" <%s>\n", switch_channel_get_name(channel), name, number);
 			send = 0;
 		} else {
-			caller_profile->callee_id_name = switch_sanitize_number(switch_core_strdup(caller_profile->pool, name));
-			caller_profile->callee_id_number = switch_sanitize_number(switch_core_strdup(caller_profile->pool, number));
+			caller_profile->callee_id_name = switch_core_strdup(caller_profile->pool, name);
+			caller_profile->callee_id_number = switch_core_strdup(caller_profile->pool, number);
 			switch_log_printf(SWITCH_CHANNEL_LOG, SWITCH_LOG_INFO, "%s Update Callee ID to \"%s\" <%s>\n", switch_channel_get_name(channel), name, number);
 
 			if (lazy || (att && !switch_channel_get_partner_uuid(channel))) {
@@ -1370,6 +1379,8 @@ void sofia_update_callee_id(switch_core_session_t *session, sofia_profile_t *pro
 
   end:
 	switch_safe_free(dup);
+	switch_safe_free(name_dup);
+	switch_safe_free(number_dup);
 }
 
 static void tech_send_ack(nua_handle_t *nh, private_object_t *tech_pvt, const char *r_sdp)
@@ -2199,20 +2210,13 @@ static uint32_t DE_THREAD_CNT = 0;
 void *SWITCH_THREAD_FUNC sofia_msg_thread_run_once(switch_thread_t *thread, void *obj)
 {
 	sofia_dispatch_event_t *de = (sofia_dispatch_event_t *) obj;
-	switch_memory_pool_t *pool = NULL;
 
 	switch_mutex_lock(mod_sofia_globals.mutex);
 	DE_THREAD_CNT++;
 	switch_mutex_unlock(mod_sofia_globals.mutex);
 
 	if (de) {
-		pool = de->pool;
-		de->pool = NULL;
 		sofia_process_dispatch_event(&de);
-	}
-
-	if (pool) {
-		switch_core_destroy_memory_pool(&pool);
 	}
 
 	switch_mutex_lock(mod_sofia_globals.mutex);
@@ -2225,16 +2229,12 @@ void *SWITCH_THREAD_FUNC sofia_msg_thread_run_once(switch_thread_t *thread, void
 void sofia_process_dispatch_event_in_thread(sofia_dispatch_event_t **dep)
 {
 	sofia_dispatch_event_t *de = *dep;
-	switch_memory_pool_t *pool;
-	//sofia_profile_t *profile = (*dep)->profile;
 	switch_thread_data_t *td;
 
-	switch_core_new_memory_pool(&pool);
-
 	*dep = NULL;
-	de->pool = pool;
 
-	td = switch_core_alloc(pool, sizeof(*td));
+	switch_zmalloc(td, sizeof(*td));
+	td->alloc = 1;
 	td->func = sofia_msg_thread_run_once;
 	td->obj = de;
 
@@ -2460,12 +2460,14 @@ void sofia_event_callback(nua_event_t event,
 		}
 
 		if (!sofia_private) {
-			if (sess_count >= sess_max || !sofia_test_pflag(profile, PFLAG_RUNNING) || !switch_core_ready_inbound()) {
+			int unavailable = (sess_count >= sess_max || !sofia_test_pflag(profile, PFLAG_RUNNING) || !switch_core_ready_inbound());
+			int bypass = (event == nua_i_options && !sofia_test_pflag(profile, PFLAG_OPTIONS_RESPOND_503_ON_BUSY));
+
+			if (unavailable && !bypass) {
 				nua_respond(nh, 503, "Maximum Calls In Progress", SIPTAG_RETRY_AFTER_STR("300"), NUTAG_WITH_THIS(nua), TAG_END());
 				nua_handle_destroy(nh);
 				goto end;
 			}
-
 
 			if (switch_queue_size(mod_sofia_globals.msg_queue) > (unsigned int)critical) {
 				nua_respond(nh, 503, "System Busy", SIPTAG_RETRY_AFTER_STR("300"), NUTAG_WITH_THIS(nua), TAG_END());
@@ -4176,7 +4178,7 @@ static void parse_gateways(sofia_profile_t *profile, switch_xml_t gateways_tag, 
 
 			if (extension_in_contact) {
 				if (rfc_5626) {
-					format = strchr(sipip, ':') ? "<sip:%s@[%s]:%d>%s" : "<sip:%s@%s:%d%s>%s";
+					format = strchr(sipip, ':') ? "<sip:%s@[%s]:%d%s>%s" : "<sip:%s@%s:%d%s>%s";
 					gateway->register_contact = switch_core_sprintf(gateway->pool, format, extension,
 							sipip,
 							sofia_glue_transport_has_tls(gateway->register_transport) ?
@@ -4925,6 +4927,12 @@ switch_status_t config_sofia(sofia_config_t reload, char *profile_name)
 							sofia_set_pflag(profile, PFLAG_ENABLE_CHAT);
 						} else {
 							sofia_clear_pflag(profile, PFLAG_ENABLE_CHAT);
+						}
+					} else if (!strcasecmp(var, "enable-chat-api-proto")) {
+						if (switch_true(val)) {
+							sofia_set_pflag(profile, PFLAG_ENABLE_CHAT_API_PROTO);
+						} else {
+							sofia_clear_pflag(profile, PFLAG_ENABLE_CHAT_API_PROTO);
 						}
 					} else if (!strcasecmp(var, "fire-bye-response-events")) {
 						if (switch_true(val)) {
@@ -6654,15 +6662,36 @@ static void sofia_handle_sip_r_invite(switch_core_session_t *session, int status
 		}
 
 		if (status >= 400) {
+			char *reason_header = NULL;
 			char status_str[5];
 			switch_snprintf(status_str, sizeof(status_str), "%d", status);
 			switch_channel_set_variable(channel, "sip_invite_failure_status", status_str);
 			switch_channel_set_variable(channel, "sip_invite_failure_phrase", phrase);
 			switch_channel_set_variable_partner(channel, "sip_invite_failure_status", status_str);
 			switch_channel_set_variable_partner(channel, "sip_invite_failure_phrase", phrase);
+
+			reason_header = sip_header_as_string(nua_handle_get_home(nh), (void *) sip->sip_reason);
+			if (!zstr(reason_header)) {
+				switch_channel_set_variable(channel, "sip_reason", reason_header);
+				switch_channel_set_variable_partner(channel, "sip_reason", reason_header);
+			}
+
+			/* 603+ (ATIS-1000099) detection: clear stale state from serial forking, then check */
+			switch_channel_set_variable(channel, "sip_603plus_reason", NULL);
+			switch_channel_set_variable_partner(channel, "sip_603plus_reason", NULL);
+
+			if (status == 603 && phrase && !strcasecmp(phrase, "Network Blocked")
+				&& sip->sip_reason && sip->sip_reason->re_text
+				&& !strncmp(sip->sip_reason->re_text, "\"v=analytics1;", 14)
+				&& !zstr(reason_header)) {
+
+				switch_channel_set_variable(channel, "sip_603plus_reason", reason_header);
+				switch_channel_set_variable_partner(channel, "sip_603plus_reason", reason_header);
+			}
 		} else {
 			switch_channel_set_variable_partner(channel, "sip_invite_failure_status", NULL);
 			switch_channel_set_variable_partner(channel, "sip_invite_failure_phrase", NULL);
+			switch_channel_set_variable_partner(channel, "sip_603plus_reason", NULL);
 		}
 
 		if (status >= 400 && sip->sip_reason && sip->sip_reason->re_protocol && (!strcasecmp(sip->sip_reason->re_protocol, "Q.850")
@@ -7533,7 +7562,7 @@ static void sofia_handle_sip_i_state(switch_core_session_t *session, int status,
 	}
 
 	if (channel && profile->pres_type && ss_state == nua_callstate_ready && status == 200) {
-		const char* to_tag = "";
+		const char* to_tag;
 		char *sql = NULL;
 		to_tag = switch_str_nil(switch_channel_get_variable(channel, "sip_to_tag"));
 		sql = switch_mprintf("update sip_dialogs set sip_to_tag='%q' "
@@ -8767,7 +8796,6 @@ static void sofia_handle_sip_i_state(switch_core_session_t *session, int status,
 
 typedef struct {
 	char *exten;
-	char *exten_with_params;
 	char *event;
 	char *reply_uuid;
 	char *bridge_to_uuid;
@@ -8794,7 +8822,7 @@ void *SWITCH_THREAD_FUNC nightmare_xfer_thread_run(switch_thread_t *thread, void
 			switch_channel_t *channel_a = switch_core_session_get_channel(session);
 			const char *session_id_header = sofia_glue_session_id_header(session, nhelper->profile);
 
-			if ((status = switch_ivr_originate(NULL, &tsession, &cause, nhelper->exten_with_params, timeout, NULL, NULL, NULL,
+			if ((status = switch_ivr_originate(NULL, &tsession, &cause, nhelper->exten, timeout, NULL, NULL, NULL,
 											   switch_channel_get_caller_profile(channel_a), nhelper->vars, SOF_NONE, NULL, NULL)) == SWITCH_STATUS_SUCCESS) {
 				if (switch_channel_up(channel_a)) {
 
@@ -9500,22 +9528,7 @@ void sofia_handle_sip_i_refer(nua_t *nua, sofia_profile_t *profile, nua_handle_t
 						nightmare_xfer_helper = switch_core_alloc(npool, sizeof(*nightmare_xfer_helper));
 						nightmare_xfer_helper->exten = switch_core_strdup(npool, exten);
 
-						if (refer_to->r_url->url_params || refer_to->r_url->url_headers) {
-							if (refer_to->r_url->url_headers) {
-								nightmare_xfer_helper->exten_with_params = switch_core_sprintf(npool,
-																							   "{sip_invite_params=%s?%s}%s",
-																							   refer_to->r_url->url_params ? refer_to->r_url->
-																							   url_params : "", refer_to->r_url->url_headers, exten);
-							} else {
-								nightmare_xfer_helper->exten_with_params = switch_core_sprintf(npool,
-																							   "{sip_invite_params=%s}%s", refer_to->r_url->url_params,
-																							   exten);
-							}
-						} else {
-							nightmare_xfer_helper->exten_with_params = nightmare_xfer_helper->exten;
-						}
-
-						switch_log_printf(SWITCH_CHANNEL_LOG, SWITCH_LOG_INFO, "Nightmare transfer to '%s'\n", nightmare_xfer_helper->exten_with_params);
+						switch_log_printf(SWITCH_CHANNEL_LOG, SWITCH_LOG_INFO, "Nightmare transfer to '%s'\n", nightmare_xfer_helper->exten);
 
 						nightmare_xfer_helper->event = switch_core_strdup(npool, etmp);
 						nightmare_xfer_helper->reply_uuid = switch_core_strdup(npool, switch_core_session_get_uuid(session));
@@ -9551,6 +9564,22 @@ void sofia_handle_sip_i_refer(nua_t *nua, sofia_profile_t *profile, nua_handle_t
 
 
 						switch_event_create(&nightmare_xfer_helper->vars, SWITCH_EVENT_CHANNEL_DATA);
+
+						/* Pass the remote-supplied Refer-To params/headers as a verbatim ovars
+						   value so they are not parsed. */
+						if (refer_to->r_url->url_params || refer_to->r_url->url_headers) {
+							const char *invite_params;
+
+							if (refer_to->r_url->url_headers) {
+								invite_params = switch_core_sprintf(npool, "%s?%s",
+																	refer_to->r_url->url_params ? refer_to->r_url->url_params : "",
+																	refer_to->r_url->url_headers);
+							} else {
+								invite_params = refer_to->r_url->url_params;
+							}
+
+							switch_event_add_header_string(nightmare_xfer_helper->vars, SWITCH_STACK_BOTTOM, "sip_invite_params", invite_params);
+						}
 
 						rep_h = switch_channel_get_variable(channel, SOFIA_REPLACES_HEADER);
 						if (rep_h) {
@@ -10390,7 +10419,7 @@ void sofia_handle_sip_i_invite(switch_core_session_t *session, nua_t *nua, sofia
 	nua_handle_t *bnh = NULL;
 	char sip_acl_authed_by[512] = "";
 	char sip_acl_token[512] = "";
-	const char *dialog_from_user = "", *dialog_from_host = "", *to_user = "", *to_host = "", *contact_user = "", *contact_host = "";
+	const char *dialog_from_user = "", *dialog_from_host = "", *to_user = "", *to_host = "", *contact_user, *contact_host;
 	const char *user_agent = "", *call_id = "";
 	url_t *from = NULL, *to = NULL, *contact = NULL;
 	const char *to_tag = "";
@@ -10476,7 +10505,7 @@ void sofia_handle_sip_i_invite(switch_core_session_t *session, nua_t *nua, sofia
 		(!is_tcp && !is_tls && (zstr(network_ip) || !switch_check_network_list_ip(network_ip, profile->local_network)) &&
 		 profile->server_rport_level >= 2 && sip->sip_user_agent &&
 		 sip->sip_user_agent->g_string &&
-		 (!strncasecmp(sip->sip_user_agent->g_string, "Polycom", 7) || !strncasecmp(sip->sip_user_agent->g_string, "KIRK Wireless Server", 20)))
+		 (!strncasecmp(sip->sip_user_agent->g_string, "Poly", 4) || !strncasecmp(sip->sip_user_agent->g_string, "KIRK Wireless Server", 20)))
 		) {
 		if (sip->sip_via) {
 			const char *port = sip->sip_via->v_port;
@@ -11633,7 +11662,7 @@ void sofia_handle_sip_i_invite(switch_core_session_t *session, nua_t *nua, sofia
 	if (profile->pres_type) {
 		const char *presence_data = switch_channel_get_variable(channel, "presence_data");
 		const char *presence_id = switch_channel_get_variable(channel, "presence_id");
-		char *full_contact = "";
+		char *full_contact;
 		char *p = NULL;
 		time_t now;
 
